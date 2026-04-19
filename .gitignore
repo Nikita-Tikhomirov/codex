@@ -6,3 +6,5 @@ harness/runs.jsonl
 harness/ab_results.json
 harness/gate_summary.json
 harness/smoke_report.json
+harness/__pycache__/
+*.pyc
