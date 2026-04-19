@@ -1,0 +1,181 @@
+﻿.section {
+  --bg: #f5f7fb;
+  --card: #ffffff;
+  --text: #0f172a;
+  --muted: #64748b;
+  --line: #dbe3f0;
+  --brand: #0f766e;
+  --brand-strong: #115e59;
+
+  background: linear-gradient(180deg, #f8fbff 0%, var(--bg) 100%);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  color: var(--text);
+  margin: 0 auto;
+  max-width: 1120px;
+  padding: 24px;
+}
+
+.header {
+  margin: 0 auto 24px;
+  max-width: 760px;
+  text-align: center;
+}
+
+.kicker {
+  color: var(--brand);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.title {
+  font-size: clamp(1.5rem, 2.5vw, 2.2rem);
+  line-height: 1.2;
+  margin: 0 0 10px;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin: 0;
+}
+
+.billingToggle {
+  background: #ecf2ff;
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 6px;
+}
+
+.toggleButton {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  color: #334155;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.92rem;
+  font-weight: 600;
+  gap: 8px;
+  line-height: 1;
+  padding: 10px 14px;
+}
+
+.toggleButtonActive {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.toggleButton:focus-visible,
+.cta:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.badge {
+  background: #dcfce7;
+  border-radius: 999px;
+  color: #166534;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 4px 7px;
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+}
+
+.cardFeatured {
+  border-color: #86efac;
+  box-shadow: 0 10px 30px rgba(15, 118, 110, 0.15);
+  transform: translateY(-1px);
+}
+
+.planName {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.priceWrap {
+  align-items: baseline;
+  display: flex;
+  gap: 6px;
+  margin: 0;
+}
+
+.price {
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.period {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.originalPrice {
+  color: #475569;
+  font-size: 0.85rem;
+  margin: 6px 0 0;
+}
+
+.featureList {
+  list-style: none;
+  margin: 18px 0;
+  padding: 0;
+}
+
+.featureItem {
+  border-top: 1px solid #edf2fb;
+  color: #1e293b;
+  font-size: 0.92rem;
+  padding: 10px 0;
+}
+
+.cta {
+  background: #e2e8f0;
+  border: none;
+  border-radius: 12px;
+  color: #0f172a;
+  cursor: pointer;
+  font-weight: 700;
+  margin-top: auto;
+  padding: 12px 14px;
+}
+
+.ctaFeatured {
+  background: var(--brand);
+  color: #ffffff;
+}
+
+.ctaFeatured:hover {
+  background: var(--brand-strong);
+}
+
+@media (min-width: 768px) {
+  .section {
+    padding: 32px;
+  }
+
+  .grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
