@@ -1,0 +1,31 @@
+﻿{
+  "tasks": [
+    {"task_id": "L01", "task_type": "layout", "simple_bugfix": false},
+    {"task_id": "L02", "task_type": "layout", "simple_bugfix": false},
+    {"task_id": "L03", "task_type": "layout", "simple_bugfix": false},
+    {"task_id": "L04", "task_type": "layout", "simple_bugfix": false},
+    {"task_id": "L05", "task_type": "layout", "simple_bugfix": false},
+    {"task_id": "L06", "task_type": "layout", "simple_bugfix": false},
+
+    {"task_id": "U01", "task_type": "ui_logic", "simple_bugfix": false},
+    {"task_id": "U02", "task_type": "ui_logic", "simple_bugfix": false},
+    {"task_id": "U03", "task_type": "ui_logic", "simple_bugfix": false},
+    {"task_id": "U04", "task_type": "ui_logic", "simple_bugfix": false},
+    {"task_id": "U05", "task_type": "ui_logic", "simple_bugfix": false},
+    {"task_id": "U06", "task_type": "ui_logic", "simple_bugfix": false},
+    {"task_id": "U07", "task_type": "ui_logic", "simple_bugfix": false},
+    {"task_id": "U08", "task_type": "ui_logic", "simple_bugfix": false},
+
+    {"task_id": "B01", "task_type": "bugfix", "simple_bugfix": true},
+    {"task_id": "B02", "task_type": "bugfix", "simple_bugfix": true},
+    {"task_id": "B03", "task_type": "bugfix", "simple_bugfix": true},
+    {"task_id": "B04", "task_type": "bugfix", "simple_bugfix": false},
+    {"task_id": "B05", "task_type": "bugfix", "simple_bugfix": false},
+
+    {"task_id": "R01", "task_type": "refactor", "simple_bugfix": false},
+    {"task_id": "R02", "task_type": "refactor", "simple_bugfix": false},
+    {"task_id": "R03", "task_type": "refactor", "simple_bugfix": false},
+    {"task_id": "R04", "task_type": "refactor", "simple_bugfix": false},
+    {"task_id": "R05", "task_type": "refactor", "simple_bugfix": false}
+  ]
+}

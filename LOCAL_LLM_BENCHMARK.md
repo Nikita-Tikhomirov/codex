@@ -54,3 +54,23 @@
 - По умолчанию использовать Cost-First Hybrid.
 - Для задач `ui_logic/refactor` fallback в облако разрешен только по формальным триггерам.
 - Если acceptance gate не проходит, вернуть cloud-first для `ui_logic/refactor`, local-first оставить для `layout`.
+
+## Harness v2 workflow (обязательно)
+
+1. Smoke:
+   - `python harness/run.py --config harness/config.yaml smoke`
+2. Логирование боевого/тестового прогона:
+   - `python harness/run.py --config harness/config.yaml live ...`
+3. Пары LOCAL_FIRST/CLOUD_ONLY:
+   - `python harness/run.py --config harness/config.yaml ab`
+4. Автогейт:
+   - `python harness/run.py --config harness/config.yaml gate`
+
+## Фиксированный бенч-сет (минимум 24 задачи)
+
+- `layout(6)`, `ui_logic(8)`, `bugfix(5)`, `refactor(5)`.
+- Шаблон набора: `harness/bench_set.json`.
+- Результаты волны не считаются валидными, если:
+  - есть `invalid_audit=true` в прогонах;
+  - нарушен `max_cloud_calls_per_task`;
+  - не выполнен парный прогон LOCAL_FIRST/CLOUD_ONLY для задачи.

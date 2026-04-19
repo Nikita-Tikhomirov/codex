@@ -63,3 +63,22 @@ Default profile: Cost-First Hybrid (RTX 3060 Ti 8GB)
 - ui_logic -> CLOUD_ONLY
 - refactor -> CLOUD_ONLY
 - bugfix -> LOCAL_FIRST only for simple fixes (1-2 files, low risk); otherwise CLOUD_ONLY
+
+## Harness v2 automation
+- Single source of truth config: `harness/config.yaml`.
+- Unified runner: `python harness/run.py`.
+- Modes:
+  - `smoke` -> runtime/model/task health checks
+  - `live` -> normalize + validate one task run and emit factual audit line
+  - `ab` -> pair LOCAL_FIRST/CLOUD_ONLY runs by `task_id`
+  - `gate` -> evaluate acceptance pass/fail from paired runs
+- Contract enforcement:
+  - any run with invalid audit data is marked `invalid_audit=true`
+  - invalid runs are excluded from acceptance gate metrics
+
+## Experimental candidate path
+- Candidate models for bugfix/refactor/ui_logic wave:
+  - `qwen2.5-coder:7b-instruct-q8_0`
+  - `granite-code:8b-instruct`
+  - `starcoder2:15b-instruct-v0.1-q3_K_M`
+- Candidate testing is isolated from production defaults until gate pass.

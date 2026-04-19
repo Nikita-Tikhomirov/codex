@@ -2,3 +2,7 @@
 ops/watchdog_ollama.log
 .local_rag/
 ab_summary.json
+harness/runs.jsonl
+harness/ab_results.json
+harness/gate_summary.json
+harness/smoke_report.json

@@ -1,7 +1,16 @@
 ﻿param(
   [string]$OllamaExe = 'C:\Users\user\AppData\Local\Programs\Ollama\ollama.exe',
   [double]$MinFreeGB = 20,
-  [string[]]$PinnedModels = @('qwen2.5-coder:7b','qwen2.5-coder:7b-instruct-q6_K','qwen3:8b','deepseek-r1:8b','bge-m3')
+  [string[]]$PinnedModels = @(
+    'qwen2.5-coder:7b',
+    'qwen2.5-coder:7b-instruct-q6_K',
+    'qwen3:8b',
+    'deepseek-r1:8b',
+    'bge-m3',
+    'qwen2.5-coder:7b-instruct-q8_0',
+    'granite-code:8b-instruct',
+    'starcoder2:15b-instruct-v0.1-q3_K_M'
+  )
 )
 
 $ErrorActionPreference = 'Stop'
