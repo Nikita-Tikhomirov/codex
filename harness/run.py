@@ -312,6 +312,22 @@ def parse_task_status(raw: str) -> dict[str, str]:
     return out
 
 
+def resolve_watchdog_log(log_value: str, root: str) -> Path:
+    raw = Path(log_value)
+    candidates: list[Path] = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    else:
+        candidates.append(Path(root) / raw)
+        candidates.append(Path("C:/Users/user/.codex") / raw)
+        candidates.append(Path("C:/Users/user/Desktop/codex") / raw)
+
+    for p in candidates:
+        if p.exists():
+            return p
+    return candidates[0]
+
+
 def cmd_smoke(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     smoke_cfg = cfg["smoke"]
     report: dict[str, Any] = {"generated_at": now_iso(), "checks": {}}
@@ -337,9 +353,7 @@ def cmd_smoke(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
             "stderr": err,
         }
 
-    log_path = Path(smoke_cfg["watchdog_log"])
-    if not log_path.is_absolute():
-        log_path = Path(args.root) / log_path
+    log_path = resolve_watchdog_log(str(smoke_cfg["watchdog_log"]), args.root)
     tail = []
     if log_path.exists():
         tail = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-20:]
