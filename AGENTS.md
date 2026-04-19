@@ -153,8 +153,38 @@
 - Исключения: `ollama` физически недоступна после self-heal или задача явно помечена как `CLOUD_ONLY`.
 - Формулировка "локалка не требовалась" запрещена.
 - В каждом ответе по задачам генерации обязательна строка аудита:
-  - `LLM_LAYER: mode=<LOCAL_FIRST|CLOUD_ONLY>, local_model=<model|none>, first_draft_sec=<n>, ready_sec=<n>, cloud_fallback=<yes|no>, reason=<text>, cloud_calls=<n>, fallback_trigger=<none|validation_failed|time_budget|defects|high_risk>`.
-  - правила роутинга и примеры команд находятся в `LOCAL_LLM_ROUTER.md`.
+  - `LLM_LAYER: mode=<LOCAL_FIRST|CLOUD_ONLY>, local_model=<model|none>, first_draft_sec=<n>, ready_sec=<n>, cloud_fallback=<yes|no>, reason=<task_specific_reason>, cloud_calls=<n>, fallback_trigger=<none|validation_failed|time_budget|defects|high_risk>, local_passes=<n>, retrieval_used=<yes|no>`.
+  
+
+### Audit Integrity Rules (обязательные)
+
+- `LLM_LAYER` обязан отражать фактический путь выполнения именно текущей задачи, а не технические preflight-проверки.
+- Значение `reason` должно описывать результат и триггеры по задаче.
+  Запрещено использовать формулировки уровня `healthcheck passed` как финальную причину для production-задач.
+- Для нетривиальных задач (не trivial, >1 файла, логика/bugfix/refactor) обязательно указывать:
+  - `local_passes=<n>`
+  - `retrieval_used=<yes|no>`
+  - `cloud_calls=<n>`
+  - `fallback_trigger=<none|validation_failed|time_budget|defects|high_risk>`
+- Если задача помечена как сложная, `local_model` должен показывать фактическую цепочку проходов
+  (например: `qwen2.5-coder:7b -> qwen2.5-coder:7b-instruct-q6_K -> deepseek-r1:8b`), а не только первый шаг.
+- Если `first_draft_sec == ready_sec` для нетривиальной задачи, агент обязан добавить короткое объяснение, почему не было итераций.
+- Если был cloud fallback, агент обязан явно указать:
+  - сколько локальных попыток было до fallback;
+  - какой именно триггер сработал;
+  - почему одного cloud-вызова хватило/не хватило.
+- Финальная строка аудита не может быть сгенерирована до завершения валидации (tests/lint/manual-check по задаче).
+- При несоответствии этих правил агент обязан пометить аудит как `invalid` и пересобрать корректный `LLM_LAYER`.
+
+### Шпаргалка проверки LLM_LAYER (10 секунд)
+
+1. `reason` про задачу, а не про healthcheck.
+2. Для нетривиальной задачи есть `local_passes`, `retrieval_used`, `cloud_calls`, `fallback_trigger`.
+3. Для сложной задачи `local_model` = цепочка проходов, не одиночная модель.
+4. Если `first_draft_sec == ready_sec`, есть объяснение отсутствия итераций.
+5. При fallback явно указаны причина и число попыток до облака.
+
+Если хотя бы один пункт не выполнен — считать аудит `invalid`.
 
 ## 13. Автозапуск и безболезненность
 
@@ -190,3 +220,4 @@
 - Гейт на прод-режим:
   - если acceptance выполнен — профиль Cost-First Hybrid становится дефолтным;
   - если нет — вернуть cloud-first для `ui_logic/refactor`, local-first оставить только для `layout`.
+
