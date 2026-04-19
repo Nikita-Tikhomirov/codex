@@ -57,3 +57,9 @@ Default profile: Cost-First Hybrid (RTX 3060 Ti 8GB)
 
 ## Required audit line in final task responses
 `LLM_LAYER: mode=<LOCAL_FIRST|CLOUD_ONLY>, local_model=<model|none>, first_draft_sec=<n>, ready_sec=<n>, cloud_fallback=<yes|no>, reason=<text>, cloud_calls=<n>, fallback_trigger=<none|validation_failed|time_budget|defects|high_risk>`
+
+## Current default task-type routing (temporary rollback profile)
+- layout -> LOCAL_FIRST
+- ui_logic -> CLOUD_ONLY
+- refactor -> CLOUD_ONLY
+- bugfix -> LOCAL_FIRST only for simple fixes (1-2 files, low risk); otherwise CLOUD_ONLY

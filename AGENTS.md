@@ -217,7 +217,11 @@
   - `success_rate` не хуже более чем на 5 п.п.;
   - `defects_found` не выше более чем на +0.3 в среднем;
   - для `layout` и простых `bugfix` — `LOCAL_ACCEPT >= 80%` без облака.
-- Гейт на прод-режим:
-  - если acceptance выполнен — профиль Cost-First Hybrid становится дефолтным;
-  - если нет — вернуть cloud-first для `ui_logic/refactor`, local-first оставить только для `layout`.
+
+- Временный дефолт по типам задач (до следующего A/B):
+  - `layout` -> `LOCAL_FIRST`;
+  - `ui_logic` -> `CLOUD_ONLY`;
+  - `refactor` -> `CLOUD_ONLY`;
+  - `bugfix` -> `LOCAL_FIRST` только при простой правке (1-2 файла, низкий риск), иначе `CLOUD_ONLY`.
+
 
