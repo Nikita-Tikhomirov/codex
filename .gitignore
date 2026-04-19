@@ -1,3 +1,4 @@
 # Runtime logs and local caches
 ops/watchdog_ollama.log
 .local_rag/
+ab_summary.json

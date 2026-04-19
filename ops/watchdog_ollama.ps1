@@ -15,6 +15,7 @@ $env:OLLAMA_MODELS = $ModelsDir
 $env:OLLAMA_KEEP_ALIVE = '30m'
 $env:OLLAMA_MAX_LOADED_MODELS = '2'
 $env:OLLAMA_NUM_PARALLEL = '1'
+$env:OLLAMA_CONTEXT_LENGTH = '4096'
 
 if (-not (Test-Path $OllamaExe)) {
   Write-Log "ERROR: missing ollama executable at $OllamaExe"

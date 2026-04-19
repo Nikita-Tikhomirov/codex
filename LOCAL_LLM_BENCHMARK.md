@@ -1,46 +1,56 @@
 ﻿# LOCAL_LLM_BENCHMARK
 
-Цель: фиксировать, когда локальная LLM-прослойка эффективнее, а когда лучше выполнять задачу без локальной генерации.
+Цель: измерять, насколько Cost-First Hybrid снижает обращения к облаку без заметной потери качества.
 
 ## Режимы сравнения
 
-- `LOCAL_FIRST`: сначала локальная модель (черновик/фрагменты), затем финализация агентом.
-- `CLOUD_ONLY`: выполнение задачи агентом без локальной генерации.
+- `LOCAL_FIRST`: локальные проходы по роутингу (fast -> strong -> reviewer), затем cloud fallback только по триггерам.
+- `CLOUD_ONLY`: выполнение задачи облаком без локальной генерации.
 
 ## Метрики (обязательные)
 
 - `task_id`: короткий ID задачи.
-- `task_type`: `layout`, `logic`, `refactor`, `bugfix`, `mixed`.
+- `task_type`: `layout`, `ui_logic`, `refactor`, `bugfix`, `mixed`.
 - `files_touched`: количество измененных файлов.
 - `loc_changed`: суммарно добавлено/удалено строк.
 - `mode`: `LOCAL_FIRST` или `CLOUD_ONLY`.
 - `first_draft_sec`: время до первого рабочего черновика.
 - `ready_sec`: время до финального результата.
+- `local_passes`: количество локальных проходов (0..3).
+- `cloud_calls`: число вызовов облака (target: <=1).
+- `cloud_fallback`: `yes/no`.
+- `fallback_trigger`: `none|validation_failed|time_budget|defects|high_risk`.
+- `retrieval_used`: `yes/no`.
+- `retrieval_hit_score`: средний score top-k (0..1, `na` если retrieval=no).
 - `rework_rounds`: количество доработок после первого черновика.
 - `tests_passed`: `yes/no/na`.
 - `defects_found`: количество явных дефектов после проверки.
+- `success`: `yes/no`.
 - `notes`: что ускорило или замедлило.
 
-## Правило выбора победителя
+## Стабильность (обязательные сутки/серия)
 
-Считаем `LOCAL_FIRST` эффективнее для конкретного типа задач, если одновременно:
+- `watchdog_restarts_day`: число рестартов watchdog за сутки.
+- `crash_count`: число падений Ollama.
+- `successful_runs_without_manual`: доля успешных прогонов без ручного вмешательства, %.
 
-1. медиана `ready_sec` минимум на 20% лучше;
-2. `defects_found` не выше `CLOUD_ONLY`;
-3. `tests_passed` не хуже `CLOUD_ONLY`.
+## Acceptance gate (Cost-First Hybrid)
 
-Иначе для такого типа задач используем `CLOUD_ONLY`.
+Профиль считаем успешным, если одновременно:
+
+1. `cloud_calls` снижены минимум на 40%.
+2. `success_rate` не хуже более чем на 5 п.п. относительно `CLOUD_ONLY`.
+3. `defects_found` не выше более чем на +0.3 в среднем.
+4. Для `layout` и простых `bugfix`: `LOCAL_ACCEPT >= 80%` без облака.
 
 ## Шаблон записи
 
-| task_id | task_type | files_touched | loc_changed | mode | first_draft_sec | ready_sec | rework_rounds | tests_passed | defects_found | notes |
-|---|---|---:|---:|---|---:|---:|---:|---|---:|---|
-| EXAMPLE-001 | layout | 2 | 180 | LOCAL_FIRST | 35 | 420 | 2 | yes | 0 | Быстрый черновик секции, доработка адаптива вручную |
+| task_id | task_type | files_touched | loc_changed | mode | first_draft_sec | ready_sec | local_passes | cloud_calls | cloud_fallback | fallback_trigger | retrieval_used | retrieval_hit_score | rework_rounds | tests_passed | defects_found | success | notes |
+|---|---|---:|---:|---|---:|---:|---:|---:|---|---|---|---:|---:|---|---:|---|---|
+| EXAMPLE-001 | layout | 2 | 180 | LOCAL_FIRST | 12 | 52 | 2 | 0 | no | none | yes | 0.72 | 1 | yes | 0 | yes | Fast+strong local pass, no cloud |
 
 ## Правило применения в работе
 
-- Для каждой новой задачи агент выбирает режим по текущей статистике в этой таблице.
-- Если статистики по типу задач меньше 3 кейсов, агент использует пробный `LOCAL_FIRST` для простых задач и фиксирует результат.
-- При регрессии качества агент автоматически переключает тип задач обратно в `CLOUD_ONLY` до новых замеров.
-| PRICING-001 | layout | 2 | 286 | LOCAL_FIRST | 12.99 | 76.12 | 1 | na | 0 | Локалка дала черновик, финализация вручную: корректный CSS Module + toggle + a11y |
-| PRICING-002 | layout | 2 | 278 | CLOUD_ONLY | 25.02 | 87.39 | 1 | na | 0 | Без локальной модели: полный цикл вручную агентом |
+- По умолчанию использовать Cost-First Hybrid.
+- Для задач `ui_logic/refactor` fallback в облако разрешен только по формальным триггерам.
+- Если acceptance gate не проходит, вернуть cloud-first для `ui_logic/refactor`, local-first оставить для `layout`.
