@@ -66,6 +66,22 @@
 4. Автогейт:
    - `python harness/run.py --config harness/config.yaml gate`
 
+## One-and-done режим (без повторов одинаковой конфигурации)
+
+- Harness считает fingerprint по `(config + bench_set + версии harness)` и ведет отдельную серию в `harness/series/<series_id>/`.
+- Для одного `task_id+mode` в серии второй валидный `live` блокируется (`duplicate_pair_blocked`), если не указан `--force`.
+- После финализации серии (`gate` при полном покрытии) новые `live` в нее блокируются (`series_finalized`), если не указан `--force`.
+- Повторный `ab/gate` для финальной серии переиспользует готовые артефакты (`reused_existing_series=true`) без новых прогонов.
+
+Практика запуска:
+
+1. Первый прогон серии:
+   - `C:\Users\user\.codex\scripts\harness.cmd live ...`
+   - `C:\Users\user\.codex\scripts\harness.cmd ab --bench-set C:\Users\user\.codex\harness\bench_set.json --require-complete`
+   - `C:\Users\user\.codex\scripts\harness.cmd gate --stability C:\Users\user\.codex\harness\stability.json`
+2. Повторная проверка той же конфигурации:
+   - `ab`/`gate` просто вернут кэш серии, без повторного live.
+
 ## Фиксированный бенч-сет (минимум 24 задачи)
 
 - `layout(6)`, `ui_logic(8)`, `bugfix(5)`, `refactor(5)`.

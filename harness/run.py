@@ -1,14 +1,21 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Local-First Harness v2
 - smoke: runtime/model/task checks
 - live: normalize + validate one run record and emit audit line
 - ab: build paired LOCAL_FIRST/CLOUD_ONLY dataset from run records
 - gate: compute acceptance gate summary
+
+Series cache mode:
+- stable fingerprint for (config + bench_set + harness code)
+- one logical series per fingerprint
+- duplicate valid task_id+mode runs are blocked by default
+- completed series can be reused without re-running live steps
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -20,6 +27,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+ALLOWED_FALLBACK_TRIGGERS = {"none", "validation_failed", "time_budget", "defects", "high_risk"}
+SERIES_VERSION = "harness_v2_series_cache_1"
+
 
 def ensure_utf8_stdio() -> None:
     if hasattr(sys.stdout, "reconfigure"):
@@ -29,7 +39,6 @@ def ensure_utf8_stdio() -> None:
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    # config.yaml is stored as YAML-compatible JSON for zero dependencies.
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
@@ -60,6 +69,20 @@ def parse_bool_yn(v: str) -> bool:
     return str(v).strip().lower() in {"yes", "y", "true", "1"}
 
 
+def read_json(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        return default
+
+
+def write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def append_jsonl(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
@@ -76,6 +99,56 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
             continue
         rows.append(json.loads(line))
     return rows
+
+
+def load_bench_tasks(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    tasks = data.get("tasks", [])
+    if not isinstance(tasks, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        task_id = str(t.get("task_id", "")).strip()
+        task_type = str(t.get("task_type", "")).strip()
+        simple_bugfix = parse_bool_yn(str(t.get("simple_bugfix", "false")))
+        if task_id and task_type:
+            out.append(
+                {
+                    "task_id": task_id,
+                    "task_type": task_type,
+                    "simple_bugfix": simple_bugfix,
+                }
+            )
+    return out
+
+
+def bench_category_counts(tasks: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for t in tasks:
+        cat = str(t.get("task_type", ""))
+        counts[cat] = counts.get(cat, 0) + 1
+    return counts
+
+
+def canonical_json_hash(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        canonical = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except json.JSONDecodeError:
+        canonical = path.read_text(encoding="utf-8", errors="ignore")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def file_hash(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def choose_default_mode(task_type: str, files_touched: int, risk: str, simple_bugfix: bool, cfg: dict[str, Any]) -> str:
@@ -130,6 +203,10 @@ def validate_record(row: dict[str, Any], cfg: dict[str, Any]) -> tuple[bool, lis
         if trigger == "none":
             issues.append("fallback_trigger_missing")
 
+    trigger = str(row.get("fallback_trigger", "none"))
+    if trigger not in ALLOWED_FALLBACK_TRIGGERS:
+        issues.append("fallback_trigger_not_allowed")
+
     return len(issues) == 0, issues
 
 
@@ -147,13 +224,192 @@ def audit_line(row: dict[str, Any]) -> str:
     )
 
 
-def cmd_live(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+@dataclass
+class SeriesPaths:
+    series_id: str
+    fingerprint: str
+    series_root: Path
+    series_dir: Path
+    series_runs: Path
+    series_ab: Path
+    series_gate: Path
+    series_meta: Path
+    series_index: Path
+    latest_final: Path
+    config_path: Path
+    bench_set_path: Path
+    harness_path: Path
+
+
+def resolve_series(args: argparse.Namespace, config_path: Path) -> SeriesPaths:
+    bench_set_path = Path(args.bench_set).resolve()
+    harness_path = Path(__file__).resolve()
+    cfg_hash = canonical_json_hash(config_path)
+    bench_hash = canonical_json_hash(bench_set_path)
+    harness_hash = file_hash(harness_path)
+    fingerprint_seed = f"{SERIES_VERSION}|{cfg_hash}|{bench_hash}|{harness_hash}"
+    fingerprint = hashlib.sha256(fingerprint_seed.encode("utf-8")).hexdigest()
+
+    series_id = args.series_id.strip() if args.series_id else fingerprint[:16]
+    series_root = Path(args.series_root)
+    series_dir = series_root / series_id
+
+    return SeriesPaths(
+        series_id=series_id,
+        fingerprint=fingerprint,
+        series_root=series_root,
+        series_dir=series_dir,
+        series_runs=series_dir / "runs.jsonl",
+        series_ab=series_dir / "ab_results.json",
+        series_gate=series_dir / "gate_summary.json",
+        series_meta=series_dir / "meta.json",
+        series_index=series_root / "series_index.json",
+        latest_final=series_root / "latest_final.json",
+        config_path=config_path,
+        bench_set_path=bench_set_path,
+        harness_path=harness_path,
+    )
+
+
+def load_meta(paths: SeriesPaths) -> dict[str, Any]:
+    meta = read_json(paths.series_meta, default={})
+    if not meta:
+        meta = {
+            "series_id": paths.series_id,
+            "fingerprint": paths.fingerprint,
+            "status": "running",
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+            "config_path": str(paths.config_path),
+            "bench_set_path": str(paths.bench_set_path),
+            "harness_path": str(paths.harness_path),
+        }
+        write_json(paths.series_meta, meta)
+    return meta
+
+
+def update_meta(paths: SeriesPaths, meta: dict[str, Any], status: str | None = None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    meta = dict(meta)
+    if status:
+        meta["status"] = status
+    if extra:
+        meta.update(extra)
+    meta["updated_at"] = now_iso()
+    write_json(paths.series_meta, meta)
+
+    index = read_json(paths.series_index, default={"fingerprints": {}, "series": {}})
+    if "fingerprints" not in index:
+        index["fingerprints"] = {}
+    if "series" not in index:
+        index["series"] = {}
+
+    index["fingerprints"][paths.fingerprint] = {
+        "series_id": paths.series_id,
+        "status": meta.get("status", "running"),
+        "updated_at": meta["updated_at"],
+    }
+    index["series"][paths.series_id] = {
+        "fingerprint": paths.fingerprint,
+        "status": meta.get("status", "running"),
+        "updated_at": meta["updated_at"],
+    }
+    write_json(paths.series_index, index)
+    return meta
+
+
+def write_latest_final(paths: SeriesPaths, gate_payload: dict[str, Any]) -> None:
+    payload = {
+        "series_id": paths.series_id,
+        "fingerprint": paths.fingerprint,
+        "updated_at": now_iso(),
+        "gate_verdict": gate_payload.get("gate", {}).get("verdict", "unknown"),
+        "gate_interpretable": gate_payload.get("gate", {}).get("interpretable", False),
+        "artifacts": {
+            "runs": str(paths.series_runs.resolve()),
+            "ab": str(paths.series_ab.resolve()),
+            "gate": str(paths.series_gate.resolve()),
+            "meta": str(paths.series_meta.resolve()),
+        },
+    }
+    write_json(paths.latest_final, payload)
+
+
+def maybe_reuse_final(paths: SeriesPaths, meta: dict[str, Any], target_kind: str) -> tuple[bool, dict[str, Any] | None]:
+    if meta.get("status") != "final":
+        return False, None
+    if target_kind == "ab" and paths.series_ab.exists():
+        payload = read_json(paths.series_ab, default={})
+        if payload:
+            payload["reused_existing_series"] = True
+            payload["series_status"] = "final"
+            return True, payload
+    if target_kind == "gate" and paths.series_gate.exists():
+        payload = read_json(paths.series_gate, default={})
+        if payload:
+            payload["reused_existing_series"] = True
+            payload["series_status"] = "final"
+            return True, payload
+    return False, None
+
+
+def pick_rows_for_series(paths: SeriesPaths, fallback_input: Path) -> list[dict[str, Any]]:
+    series_rows = load_jsonl(paths.series_runs)
+    if series_rows:
+        return series_rows
+
+    rows = load_jsonl(fallback_input)
+    filtered: list[dict[str, Any]] = []
+    for r in rows:
+        if r.get("series_id") == paths.series_id or r.get("fingerprint") == paths.fingerprint:
+            filtered.append(r)
+    return filtered
+
+
+def cmd_live(args: argparse.Namespace, cfg: dict[str, Any], config_path: Path) -> int:
     mode = args.mode
     if mode == "AUTO":
         mode = choose_default_mode(args.task_type, args.files_touched, args.risk, args.simple_bugfix, cfg)
 
+    paths = resolve_series(args, config_path)
+    meta = load_meta(paths)
+
+    if meta.get("status") == "final" and not args.force:
+        payload = {
+            "error": "series_finalized",
+            "series_id": paths.series_id,
+            "fingerprint": paths.fingerprint,
+            "message": "Series already finalized. Use --force to append new runs.",
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 5
+
+    existing_rows = load_jsonl(paths.series_runs)
+    existing_valid = None
+    for r in reversed(existing_rows):
+        if (
+            str(r.get("task_id", "")) == args.task_id
+            and str(r.get("mode", "")) == mode
+            and not bool(r.get("invalid_audit", False))
+        ):
+            existing_valid = r
+            break
+
+    if existing_valid and not args.force:
+        payload = {
+            "error": "duplicate_pair_blocked",
+            "series_id": paths.series_id,
+            "fingerprint": paths.fingerprint,
+            "task_id": args.task_id,
+            "mode": mode,
+            "message": "Valid run for this task_id+mode already exists in this series. Use --force to override.",
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 4
+
     row = {
         "timestamp": now_iso(),
+        "series_id": paths.series_id,
+        "fingerprint": paths.fingerprint,
         "task_id": args.task_id,
         "task_type": args.task_type,
         "files_touched": args.files_touched,
@@ -180,15 +436,37 @@ def cmd_live(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     row["invalid_audit"] = not ok
     row["invalid_reasons"] = issues
 
-    append_jsonl(Path(args.output), row)
+    append_jsonl(paths.series_runs, row)
+    output_path = Path(args.output)
+    if output_path.resolve() != paths.series_runs.resolve():
+        append_jsonl(output_path, row)
+
+    update_meta(paths, meta, status="running")
+
     print(audit_line(row))
     print(json.dumps(row, ensure_ascii=False, indent=2))
     return 0
 
 
-def cmd_ab(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
-    _ = cfg
-    rows = load_jsonl(Path(args.input))
+def cmd_ab(args: argparse.Namespace, cfg: dict[str, Any], config_path: Path) -> int:
+    bench_cfg = cfg.get("bench", {})
+    paths = resolve_series(args, config_path)
+    meta = load_meta(paths)
+
+    if args.reuse_series:
+        reused, payload = maybe_reuse_final(paths, meta, "ab")
+        if reused and payload is not None:
+            write_json(Path(args.output), payload)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+
+    bench_tasks = load_bench_tasks(paths.bench_set_path)
+    bench_map = {str(t["task_id"]): t for t in bench_tasks}
+    bench_ids = set(bench_map.keys())
+    config_required_counts = bench_cfg.get("required_counts", {})
+    min_tasks = int(bench_cfg.get("min_tasks", len(bench_ids)))
+
+    rows = pick_rows_for_series(paths, Path(args.input))
     by_task: dict[str, dict[str, dict[str, Any]]] = {}
     for r in rows:
         if r.get("invalid_audit"):
@@ -200,26 +478,81 @@ def cmd_ab(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         by_task.setdefault(task_id, {})[mode] = r
 
     pairs = []
-    for task_id, m in sorted(by_task.items()):
+    iter_ids = sorted(bench_ids) if bench_ids else sorted(by_task.keys())
+    for task_id in iter_ids:
+        m = by_task.get(task_id, {})
         if "LOCAL_FIRST" in m and "CLOUD_ONLY" in m:
             pairs.append(
                 {
                     "task_id": task_id,
-                    "task_type": m["LOCAL_FIRST"].get("task_type") or m["CLOUD_ONLY"].get("task_type"),
+                    "task_type": bench_map.get(task_id, {}).get("task_type")
+                    or m["LOCAL_FIRST"].get("task_type")
+                    or m["CLOUD_ONLY"].get("task_type"),
                     "local": m["LOCAL_FIRST"],
                     "cloud": m["CLOUD_ONLY"],
                 }
             )
 
+    missing_local = []
+    missing_cloud = []
+    for task_id in iter_ids:
+        modes = by_task.get(task_id, {})
+        if "LOCAL_FIRST" not in modes:
+            missing_local.append(task_id)
+        if "CLOUD_ONLY" not in modes:
+            missing_cloud.append(task_id)
+
+    unexpected_task_ids = sorted(set(by_task.keys()) - bench_ids) if bench_ids else []
+    pair_category_counts = bench_category_counts([{"task_type": p.get("task_type", "unknown")} for p in pairs])
+    expected_category_counts = bench_category_counts(bench_tasks) if bench_tasks else {}
+
+    category_missing = {}
+    for cat, need in expected_category_counts.items():
+        have = pair_category_counts.get(cat, 0)
+        category_missing[cat] = max(int(need) - int(have), 0)
+
+    required_counts = expected_category_counts if expected_category_counts else config_required_counts
+    required_category_ok = True
+    for cat, need in required_counts.items():
+        if pair_category_counts.get(cat, 0) < int(need):
+            required_category_ok = False
+            break
+
+    pair_count = len(pairs)
+    expected_total_tasks = len(iter_ids)
+    pair_count_target = expected_total_tasks if expected_total_tasks > 0 else min_tasks
+    pair_count_ok = pair_count >= pair_count_target
+    complete = pair_count_ok and required_category_ok and not missing_local and not missing_cloud
+
     payload = {
         "generated_at": now_iso(),
+        "series_id": paths.series_id,
+        "fingerprint": paths.fingerprint,
+        "series_status": meta.get("status", "running"),
+        "reused_existing_series": False,
         "pairs": pairs,
-        "pair_count": len(pairs),
+        "pair_count": pair_count,
+        "pair_count_target": pair_count_target,
+        "expected_total_tasks": expected_total_tasks,
+        "missing_local_modes": missing_local,
+        "missing_cloud_modes": missing_cloud,
+        "unexpected_task_ids": unexpected_task_ids,
+        "expected_category_counts": expected_category_counts,
+        "pair_category_counts": pair_category_counts,
+        "category_missing": category_missing,
+        "required_category_counts": required_counts,
+        "complete_pair_coverage": complete,
     }
-    out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    write_json(paths.series_ab, payload)
+    write_json(Path(args.output), payload)
+
+    meta = update_meta(paths, meta, status="ab_ready" if complete else "running")
+    payload["series_status"] = meta.get("status", "running")
+
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if args.require_complete and not complete:
+        return 3
     return 0
 
 
@@ -239,8 +572,22 @@ def summarize_mode(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def cmd_gate(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
-    data = json.loads(Path(args.input).read_text(encoding="utf-8"))
+def cmd_gate(args: argparse.Namespace, cfg: dict[str, Any], config_path: Path) -> int:
+    paths = resolve_series(args, config_path)
+    meta = load_meta(paths)
+
+    if args.reuse_series:
+        reused, payload = maybe_reuse_final(paths, meta, "gate")
+        if reused and payload is not None:
+            write_json(Path(args.output), payload)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+
+    input_path = Path(args.input)
+    if not input_path.exists() and paths.series_ab.exists():
+        input_path = paths.series_ab
+
+    data = read_json(input_path, default={})
     pairs = data.get("pairs", [])
 
     local_rows = [p["local"] for p in pairs]
@@ -250,55 +597,113 @@ def cmd_gate(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     cloud_summary = summarize_mode(cloud_rows)
 
     acceptance = cfg["acceptance"]
-    cloud_calls_reduction = 0.0
-    if cloud_summary["cloud_calls_avg"] > 0:
-        cloud_calls_reduction = (cloud_summary["cloud_calls_avg"] - local_summary["cloud_calls_avg"]) / cloud_summary["cloud_calls_avg"]
+    bench_cfg = cfg.get("bench", {})
+    complete_pair_coverage = bool(data.get("complete_pair_coverage", False))
+    pair_count = int(data.get("pair_count", len(pairs)))
+    expected_pair_count = int(data.get("pair_count_target", int(bench_cfg.get("min_tasks", 0))))
 
-    success_drop_pp = (cloud_summary["success_rate"] - local_summary["success_rate"]) * 100
-    defects_delta = local_summary["defects_avg"] - cloud_summary["defects_avg"]
-
-    local_accept_candidates = [
-        r for r in local_rows
-        if r.get("task_type") == "layout" or (r.get("task_type") == "bugfix" and parse_bool_yn(str(r.get("simple_bugfix", "no"))))
-    ]
-    if local_accept_candidates:
-        local_accept = mean([
-            1.0 if parse_bool_yn(str(r.get("success", "no"))) and safe_float(r.get("cloud_calls")) == 0 else 0.0
-            for r in local_accept_candidates
-        ])
+    gate: dict[str, Any]
+    if not complete_pair_coverage:
+        gate = {
+            "interpretable": False,
+            "passed": False,
+            "verdict": "insufficient_data",
+            "reason": "pair_coverage_incomplete",
+            "pair_count": pair_count,
+            "pair_count_target": expected_pair_count,
+            "cloud_calls_reduction": 0.0,
+            "cloud_calls_reduction_ok": False,
+            "success_drop_pp": 0.0,
+            "success_ok": False,
+            "defects_delta": 0.0,
+            "defects_ok": False,
+            "local_accept": 0.0,
+            "local_accept_ok": False,
+        }
     else:
-        local_accept = 0.0
+        cloud_calls_reduction = 0.0
+        if cloud_summary["cloud_calls_avg"] > 0:
+            cloud_calls_reduction = (cloud_summary["cloud_calls_avg"] - local_summary["cloud_calls_avg"]) / cloud_summary["cloud_calls_avg"]
 
-    gate = {
-        "cloud_calls_reduction": round(cloud_calls_reduction, 4),
-        "cloud_calls_reduction_ok": cloud_calls_reduction >= float(acceptance["cloud_calls_reduction_min"]),
-        "success_drop_pp": round(success_drop_pp, 4),
-        "success_ok": success_drop_pp <= float(acceptance["success_rate_drop_max_pp"]),
-        "defects_delta": round(defects_delta, 4),
-        "defects_ok": defects_delta <= float(acceptance["defects_delta_max"]),
-        "local_accept": round(local_accept, 4),
-        "local_accept_ok": local_accept >= float(acceptance["local_accept_layout_simple_bugfix_min"]),
-    }
-    gate["passed"] = all([
-        gate["cloud_calls_reduction_ok"],
-        gate["success_ok"],
-        gate["defects_ok"],
-        gate["local_accept_ok"],
-    ])
+        success_drop_pp = (cloud_summary["success_rate"] - local_summary["success_rate"]) * 100
+        defects_delta = local_summary["defects_avg"] - cloud_summary["defects_avg"]
+
+        local_accept_candidates = [
+            r
+            for r in local_rows
+            if r.get("task_type") == "layout"
+            or (r.get("task_type") == "bugfix" and parse_bool_yn(str(r.get("simple_bugfix", "no"))))
+        ]
+        if local_accept_candidates:
+            local_accept = mean(
+                [
+                    1.0
+                    if parse_bool_yn(str(r.get("success", "no"))) and safe_float(r.get("cloud_calls")) == 0
+                    else 0.0
+                    for r in local_accept_candidates
+                ]
+            )
+        else:
+            local_accept = 0.0
+
+        gate = {
+            "interpretable": True,
+            "cloud_calls_reduction": round(cloud_calls_reduction, 4),
+            "cloud_calls_reduction_ok": cloud_calls_reduction >= float(acceptance["cloud_calls_reduction_min"]),
+            "success_drop_pp": round(success_drop_pp, 4),
+            "success_ok": success_drop_pp <= float(acceptance["success_rate_drop_max_pp"]),
+            "defects_delta": round(defects_delta, 4),
+            "defects_ok": defects_delta <= float(acceptance["defects_delta_max"]),
+            "local_accept": round(local_accept, 4),
+            "local_accept_ok": local_accept >= float(acceptance["local_accept_layout_simple_bugfix_min"]),
+            "pair_count": pair_count,
+            "pair_count_target": expected_pair_count,
+        }
+        gate["passed"] = all(
+            [
+                gate["cloud_calls_reduction_ok"],
+                gate["success_ok"],
+                gate["defects_ok"],
+                gate["local_accept_ok"],
+            ]
+        )
+        gate["verdict"] = "pass" if gate["passed"] else "fail"
 
     stability_path = Path(args.stability)
     stability = json.loads(stability_path.read_text(encoding="utf-8-sig")) if stability_path.exists() else {}
 
     out_payload = {
         "generated_at": now_iso(),
+        "series_id": paths.series_id,
+        "fingerprint": paths.fingerprint,
+        "series_status": meta.get("status", "running"),
+        "reused_existing_series": False,
         "local_summary": local_summary,
         "cloud_summary": cloud_summary,
         "gate": gate,
+        "ab_meta": {
+            "pair_count": pair_count,
+            "pair_count_target": expected_pair_count,
+            "complete_pair_coverage": complete_pair_coverage,
+            "missing_local_modes": data.get("missing_local_modes", []),
+            "missing_cloud_modes": data.get("missing_cloud_modes", []),
+            "expected_category_counts": data.get("expected_category_counts", {}),
+            "pair_category_counts": data.get("pair_category_counts", {}),
+            "category_missing": data.get("category_missing", {}),
+        },
         "stability": stability,
     }
-    out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(out_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    write_json(paths.series_gate, out_payload)
+    write_json(Path(args.output), out_payload)
+
+    finalizable = bool(complete_pair_coverage) and bool(gate.get("interpretable", False))
+    meta = update_meta(paths, meta, status="final" if finalizable else "running")
+    out_payload["series_status"] = meta.get("status", "running")
+
+    if finalizable:
+        write_latest_final(paths, out_payload)
+
     print(json.dumps(out_payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -361,7 +766,9 @@ def cmd_smoke(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
 
     drive = args.drive.upper()
     if os.name == "nt":
-        rc, out, err = run_cmd(["powershell", "-NoProfile", "-Command", f"$d=Get-PSDrive -Name {drive}; Write-Output $d.Free"], timeout=30)
+        rc, out, err = run_cmd(
+            ["powershell", "-NoProfile", "-Command", f"$d=Get-PSDrive -Name {drive}; Write-Output $d.Free"], timeout=30
+        )
         free_gb = None
         if rc == 0 and out.strip().isdigit():
             free_gb = round(int(out.strip()) / (1024**3), 2)
@@ -373,8 +780,7 @@ def cmd_smoke(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         }
 
     out_file = Path(args.output)
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-    out_file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(out_file, report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
@@ -412,15 +818,30 @@ def build_parser() -> argparse.ArgumentParser:
     s_live.add_argument("--reason", required=True)
     s_live.add_argument("--notes", default="")
     s_live.add_argument("--output", default="harness/runs.jsonl")
+    s_live.add_argument("--bench-set", default="harness/bench_set.json")
+    s_live.add_argument("--series-root", default="harness/series")
+    s_live.add_argument("--series-id", default="")
+    s_live.add_argument("--force", action="store_true")
 
     s_ab = sub.add_parser("ab")
     s_ab.add_argument("--input", default="harness/runs.jsonl")
     s_ab.add_argument("--output", default="harness/ab_results.json")
+    s_ab.add_argument("--bench-set", default="harness/bench_set.json")
+    s_ab.add_argument("--series-root", default="harness/series")
+    s_ab.add_argument("--series-id", default="")
+    s_ab.add_argument("--require-complete", action="store_true")
+    s_ab.add_argument("--reuse-series", dest="reuse_series", action="store_true", default=True)
+    s_ab.add_argument("--no-reuse-series", dest="reuse_series", action="store_false")
 
     s_gate = sub.add_parser("gate")
     s_gate.add_argument("--input", default="harness/ab_results.json")
     s_gate.add_argument("--stability", default="harness/stability.json")
     s_gate.add_argument("--output", default="harness/gate_summary.json")
+    s_gate.add_argument("--bench-set", default="harness/bench_set.json")
+    s_gate.add_argument("--series-root", default="harness/series")
+    s_gate.add_argument("--series-id", default="")
+    s_gate.add_argument("--reuse-series", dest="reuse_series", action="store_true", default=True)
+    s_gate.add_argument("--no-reuse-series", dest="reuse_series", action="store_false")
 
     return p
 
@@ -429,16 +850,17 @@ def main() -> int:
     ensure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args()
-    cfg = load_config(Path(args.config))
+    config_path = Path(args.config).resolve()
+    cfg = load_config(config_path)
 
     if args.cmd == "smoke":
         return cmd_smoke(args, cfg)
     if args.cmd == "live":
-        return cmd_live(args, cfg)
+        return cmd_live(args, cfg, config_path)
     if args.cmd == "ab":
-        return cmd_ab(args, cfg)
+        return cmd_ab(args, cfg, config_path)
     if args.cmd == "gate":
-        return cmd_gate(args, cfg)
+        return cmd_gate(args, cfg, config_path)
     return 2
 
 
